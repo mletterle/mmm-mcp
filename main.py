@@ -1,6 +1,7 @@
 from typing import Any
 from os import environ
 from urllib import parse as url_parse
+from datetime import datetime, timezone
 
 import asyncio
 
@@ -174,19 +175,38 @@ async def describe_tracks(tracks: []) -> str:
             resp += "\n"
     return resp
 
-
-
 @mcp.tool()
-async def mmm_music_get_recent_tracks() -> str:
-    """Gets the user's ten most recently played tracks, including any currently playing track."""
-    recent_tracks = await lastfm_api_call("user.getrecenttracks", {"user": LASTFM_USER, "extended": 1, "limit": 10})
+async def mmm_music_get_recent_tracks(num: int=10) -> str:
+    """Gets the user's ten most recently played tracks, including any currently playing track.
+Defaults to the 10 most recent.
+You should NOT call this unless the user explicitly asked for their most recent tracks. Using mmm_music_get_tracks_for_range is usually more approriate. """
+    recent_tracks = await lastfm_api_call("user.getrecenttracks", {"user": LASTFM_USER, "extended": 1, "limit": num})
 
     resp = "# Top Ten Most Recent Tracks\n\n"
     resp += "Tracks are listed from most recently played.\n"
     resp += await describe_tracks(recent_tracks["recenttracks"])
     resp += "\n"
 
-    print(resp)
+    return resp
+
+@mcp.tool()
+async def mmm_music_get_tracks_for_range(from_timestamp: int=0, to_timestamp: int=0, description: str=None) -> str:
+    """Gets the user's tracks from between two Unix UTC timestamps, if from or to is not provided, returns only the ten most recent tracks. An optional description of the time span may be provided."""
+    if from_timestamp == 0 or to_timestamp == 0:
+        return await mmm_music_get_recent_ten_tracks()
+
+    recent_tracks = await lastfm_api_call("user.getrecenttracks", {"user": LASTFM_USER, "extended": 1, "from": from_timestamp, "to": to_timestamp})
+
+    from_date = datetime.fromtimestamp(from_timestamp, tz=timezone.utc)
+    to_date = datetime.fromtimestamp(to_timestamp, tz=timezone.utc)
+
+    resp = f"# Tracks played "
+    if description:
+        resp += f"during {description}: "
+    resp += f"({from_date.strftime('%Y-%m-%d %H:%M:%S UTC')} - {to_date.strftime('%Y-%m-%d %H:%M:%S UTC')})\n\n"
+    resp += await describe_tracks(recent_tracks["recenttracks"])
+    resp += "\n"
+
     return resp
 
 
