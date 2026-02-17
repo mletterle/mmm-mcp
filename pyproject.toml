@@ -1,10 +1,11 @@
 [project]
-name = "lastfm-sentiment-mcp"
+name = "mmm-mcp"
 version = "0.1.0"
-description = "Add your description here"
+description = "Michael's Magic Music MCP"
 readme = "README.md"
 requires-python = ">=3.13.7"
 dependencies = [
+    "fastmcp<3",
     "httpx>=0.28.1",
-    "mcp[cli]>=1.26.0",
+    "httpx-retries>=0.4.5",
 ]
