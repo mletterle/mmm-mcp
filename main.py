@@ -2,6 +2,8 @@ from typing import Any
 from os import environ
 from urllib import parse as url_parse
 
+import asyncio
+
 import httpx
 from httpx_retries import RetryTransport
 
@@ -20,17 +22,17 @@ DEEZER_API = "https://api.deezer.com/"
 RECCOBEATS_API = "https://api.reccobeats.com/v1"
 
 mcp = FastMCP("music")
+http_client = httpx.AsyncClient(transport=RetryTransport(),limits=httpx.Limits(max_connections=100))
 
 async def json_api_call(url: str, args: dict={}) -> dict:
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     url = f"{url}{("&" + url_parse.urlencode(args)) if args else ""}"
-    async with httpx.AsyncClient(transport=RetryTransport()) as client:
-       try:
-           response = await client.get(url=url, headers=headers)
-           response.raise_for_status()
-           return response.json()
-       except Exception:
-           return {}
+    try:
+        response = await http_client.get(url=url, headers=headers)
+        response.raise_for_status()
+        return response.json()
+    except Exception:
+        return {}
 
 async def lastfm_api_call(method: str, args: dict={}) -> dict:
     return await json_api_call(f"{LASTFM_API}/?method={method}&api_key={LASTFM_TOKEN}&format=json", args)
@@ -76,26 +78,39 @@ async def describe_tracks(tracks: []) -> str:
         album_name = track["album"]["#text"] if (track["album"] and track["album"]["#text"]) else ""
         track_name = track["name"]
 
-        lastfm_tags = await lastfm_api_call("track.gettoptags", {"artist": artist_name, "track": track_name})
-        for tag in lastfm_tags["toptags"]["tag"][:5] if "toptags" in lastfm_tags else []:
-            tags.append(tag["name"])
-
-        lastfm_tags = await lastfm_api_call("artist.gettoptags", {"artist": artist_name})
-        for tag in lastfm_tags["toptags"]["tag"][:5] if "toptags" in lastfm_tags else []:
-            tags.append(tag["name"])
+        lastfm_track_tags = lastfm_api_call("track.gettoptags", {"artist": artist_name, "track": track_name})
+        lastfm_artist_tags = lastfm_api_call("artist.gettoptags", {"artist": artist_name})
+        lastfm_album_tags = None
 
         if album_name:
-            lastfm_tags = await lastfm_api_call("album.gettoptags", {"artist": artist_name, "album": album_name})
-            for tag in lastfm_tags["toptags"]["tag"][:5] if "toptags" in lastfm_tags else []:
-                tags.append(tag["name"])
+            lastfm_album_tags = lastfm_api_call("album.gettoptags", {"artist": artist_name, "album": album_name})
+
+        tag_tasks = [lastfm_track_tags, lastfm_artist_tags] + [lastfm_album_tags] if lastfm_album_tags else []
 
         query = f"recording:\"{track_name}\" AND artist:\"{artist_name}\""
         query += f" AND release:\"{album_name}\"" if album_name else ""
 
-        mb = await musicbrains_api_call("recording", {"query": query, "limit": 1})
+        mb_task = musicbrains_api_call("recording", {"query": query, "limit": 1})
+
+        query = f"artist:\"{artist_name}\" "
+        query += f"track:\"{track_name}\" "
+        if album_name:
+            query += f"album:\"{album_name}\" "
+
+        deezer_task = deezer_api_call("search", {"q": query, "limit": 1})
+
+        results = await asyncio.gather(*tag_tasks, mb_task, deezer_task)
+        tag_n = len(tag_tasks) - 1
+        mb_n = tag_n + 1;
+        dez_n = mb_n +1;
+
+        tags.extend(set(tag["name"] for tag in results[:tag_n] for tag in tag["toptags"]["tag"]));
+
+        mb = results[mb_n]
+        deezer = results[dez_n]
 
         rid = None
-        if mb["count"] > 0:
+        if mb["count"] if "count" in mb else 0 > 0:
             recording = mb["recordings"][mb["offset"]]
             rid = recording["id"]
 
@@ -109,16 +124,11 @@ async def describe_tracks(tracks: []) -> str:
                 if "url" in rel:
                     urls.append(rel["url"]["resource"])
 
-        query = f"artist:\"{artist_name}\" "
-        query += f"track:\"{track_name}\" "
-        if album_name:
-            query += f"album:\"{album_name}\" "
 
         isrc = None
         audio_feats = None
 
-        deezer = await deezer_api_call("search", {"q": query, "limit": 1})
-        if deezer["total"] > 0:
+        if deezer["total"] if "total" in deezer else 0 > 0:
             isrc = deezer["data"][0]["isrc"]
 
         if not isrc is None:
