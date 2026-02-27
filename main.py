@@ -4,6 +4,7 @@ from urllib import parse as url_parse
 from datetime import datetime, timezone
 
 import asyncio
+import json
 
 import httpx
 from httpx_retries import RetryTransport
@@ -47,30 +48,9 @@ async def deezer_api_call(path: str, args: dict={}) -> dict:
 async def reccobeats_api_call(path: str, args: dict={}) -> dict:
     return await json_api_call(f"{RECCOBEATS_API}/{path}", args)
 
-async def describe_tracks(tracks: []) -> str:
-    resp = "When available Music Features are provied, the Features have the following definitions:\n"
-    resp += """
-- Acousticness: Refers to how much of a song or piece of music is made up of natural, organic sounds rather than synthetic or electronic elements. In other words, it's a measure of how "acoustic" a piece of music sounds. A confidence measure from 0.0 to 1.0, greater value represents higher confidence the track is acoustic.
-
-- Danceability: A measure of how suitable a song is for dancing, ranging from 0 to 1. A score of 0 means the song is not danceable at all, while a score of 1 indicates it is highly danceable. This score takes into account factors like tempo, rhythm, beat consistency, and energy, with higher scores indicating stronger, more rhythmically engaging tracks.
-
-- Energy: Refers to the intensity and liveliness of a track, with a range from 0 to 1. A score of 0 indicates a very calm, relaxed, or low-energy song, while a score of 1 represents a high-energy, intense track. It’s influenced by elements like tempo, loudness, and the overall drive or excitement in the music.
-
-- Instrumentalness: Predicts whether a track contains no vocals. “Ooh” and “aah” sounds are treated as instrumental in this context. Rap or spoken word tracks are clearly “vocal”. The closer the instrumentalness value is to 1.0, the greater likelihood the track contains no vocal content. Values above 0.5 are intended to represent instrumental tracks, but confidence is higher as the value approaches 1.0.
-
-- Key: The key the track is in. Integers map to pitches using standard Pitch Class notation. E.g. 0 = C, 1 = C♯/D♭, 2 = D, and so on. If no key was detected, the value is -1.
-
-- Liveness: The presence of an audience in the recording. Higher liveness values represent an increased probability that the track was performed live. A value above 0.8 provides strong likelihood that the track is live.
-
-- Loudness: The overall loudness of a track in decibels (dB). Loudness values are averaged across the entire track and are useful for comparing relative loudness of tracks. Loudness is the quality of a sound that is the primary psychological correlate of physical strength (amplitude). Values typical range between -60 and 0 db.
-
-- Mode: Indicates the modality (major or minor) of a track.
-
-- Speechiness: Detects the presence of spoken words in a track. The more exclusively speech-like the recording (e.g. talk show, audio book, poetry), the closer to 1.0 the attribute value. Values above 0.66 describe tracks that are probably made entirely of spoken words. Values between 0.33 and 0.66 describe tracks that may contain both music and speech, either in sections or layered, including such cases as rap music. Values below 0.33 most likely represent music and other non-speech-like tracks.
-
-- Tempo: The overall estimated tempo of a track in beats per minute (BPM). Values typical range between 0 and 250
-
-- Valence: Measures the emotional tone or mood of a track, with a range from 0 to 1. A score of 0 indicates a song with a more negative, sad, or dark feeling, while a score of 1 represents a more positive, happy, or uplifting mood. Tracks with a high valence tend to feel joyful or energetic, while those with a low valence may evoke feelings of melancholy or sadness."""
+async def format_tracks(tracks: [], rich: False) -> str:
+    resp = ""
+    return_tracks = []
     for track in tracks["track"]:
         tags = []
         urls = []
@@ -105,7 +85,8 @@ async def describe_tracks(tracks: []) -> str:
         mb_n = tag_n + 1;
         dez_n = mb_n +1;
 
-        tags.extend(set(tag["name"] for tag in results[:tag_n] for tag in tag["toptags"]["tag"]));
+        tags.extend(set(tag["name"] for tag in results[:tag_n] for tag in (tag["toptags"]["tag"] if "toptags" in tag else [])));
+
 
         mb = results[mb_n]
         deezer = results[dez_n]
@@ -127,8 +108,6 @@ async def describe_tracks(tracks: []) -> str:
 
 
         isrc = None
-        audio_feats = None
-
         if deezer["total"] if "total" in deezer else 0 > 0:
             isrc = deezer["data"][0]["isrc"]
 
@@ -137,61 +116,96 @@ async def describe_tracks(tracks: []) -> str:
             if "content" in rb and len(rb["content"]) > 0:
                 track_id = rb["content"][0]["id"]
                 rb_audio = await reccobeats_api_call(f"track/{track_id}/audio-features")
-                audio_feats = rb_audio
+                track["audio_feats"] = rb_audio
 
-        resp += f"## ⌚ {track["date"]["#text"] if "date" in track else "Now Playing"}: 🎶 {track["artist"]["name"]} - {track["name"]}\n"
+        track["tags"] = tags
+        track["urls"] = urls
 
-        resp += f"🧑‍🎤: Singer: {track["artist"]["name"]}\n"
-        resp += f"🎵: Track: {track["name"]}\n"
+        if rich:
+            resp += f"## ⌚ {track["date"]["#text"] if "date" in track else "Now Playing"}: 🎶 {track["artist"]["name"]} - {track["name"]}\n"
 
-        if track["image"][IMG_XL]["#text"]:
-            resp += f"🖼️: Image: ![Track Cover Image]({track["image"][IMG_XL]["#text"]})\n"
+            resp += f"🧑‍🎤: Singer: {track["artist"]["name"]}\n"
+            resp += f"🎵: Track: {track["name"]}\n"
+
+            if track["image"][IMG_XL]["#text"]:
+                resp += f"🖼️: Image: ![Track Cover Image]({track["image"][IMG_XL]["#text"]})\n"
 
 
-        if track["loved"] == "1":
-            resp += "❤️: Loved: The user loves this track.\n"
+            if track["loved"] == "1":
+                resp += "❤️: Loved: The user loves this track.\n"
 
-        if tags:
-            resp += f"🏷️: Tags: {" ".join(set(tags))}\n"
+            if track["tags"]:
+                resp += f"🏷️: Tags: {" ".join(set(track['tags']))}\n"
 
-        if audio_feats:
-            resp += "\n### ♮ Musical Features\n\n"
-            resp += f"Key: {audio_feats["key"]}\n"
-            resp += f"Mode: {"Major" if audio_feats["mode"] == 1 else "Minor"}\n"
-            resp += f"Tempo: {audio_feats["tempo"]} bpm\n"
-            resp += f"Acousticness: {audio_feats["acousticness"]}\n"
-            resp += f"Danceablity: {audio_feats["danceability"]}\n"
-            resp += f"Energy: {audio_feats["energy"]}\n"
-            resp += f"Instrumentalness: {audio_feats["instrumentalness"]}\n"
-            resp += f"Liveness: {audio_feats["liveness"]}\n"
-            resp += f"Loudness: {audio_feats["loudness"]}\n"
-            resp += f"Speechiness: {audio_feats["speechiness"]}\n"
-            resp += f"Valence: {audio_feats["valence"]}\n"
+            if track["audio_feats"]:
+                audio_feats = track["audio_feats"]
+                resp += "\n### ♮ Musical Features\n\n"
+                resp += f"Key: {audio_feats["key"]}\n"
+                resp += f"Mode: {"Major" if audio_feats["mode"] == 1 else "Minor"}\n"
+                resp += f"Tempo: {audio_feats["tempo"]} bpm\n"
+                resp += f"Acousticness: {audio_feats["acousticness"]}\n"
+                resp += f"Danceablity: {audio_feats["danceability"]}\n"
+                resp += f"Energy: {audio_feats["energy"]}\n"
+                resp += f"Instrumentalness: {audio_feats["instrumentalness"]}\n"
+                resp += f"Liveness: {audio_feats["liveness"]}\n"
+                resp += f"Loudness: {audio_feats["loudness"]}\n"
+                resp += f"Speechiness: {audio_feats["speechiness"]}\n"
+                resp += f"Valence: {audio_feats["valence"]}\n"
 
-        if urls:
-            resp += "\n### 🌐 Related Links\n\n"
-            for url in urls:
-                resp += f"- {url}\n"
-            resp += "\n"
-    return resp
+            if track["urls"]:
+                resp += "\n### 🌐 Related Links\n\n"
+                for url in urls:
+                    resp += f"- {url}\n"
+                resp += "\n"
+        else:
+            return_tracks.append(track)
+    return resp if rich else json.dumps(return_tracks)
 
 @mcp.tool()
-async def mmm_music_get_recent_tracks(num: int=10) -> str:
+async def mmm_music_feature_glossary() -> str:
+    """Gets a glossary of what the various Music Features mean, either to provide to the user or for the agent to learn"""
+    return """When available Music Features are provied, the Features have the following definitions:
+- Acousticness: Refers to how much of a song or piece of music is made up of natural, organic sounds rather than synthetic or electronic elements. In other words, it's a measure of how "acoustic" a piece of music sounds. A confidence measure from 0.0 to 1.0, greater value represents higher confidence the track is acoustic.
+
+- Danceability: A measure of how suitable a song is for dancing, ranging from 0 to 1. A score of 0 means the song is not danceable at all, while a score of 1 indicates it is highly danceable. This score takes into account factors like tempo, rhythm, beat consistency, and energy, with higher scores indicating stronger, more rhythmically engaging tracks.
+
+- Energy: Refers to the intensity and liveliness of a track, with a range from 0 to 1. A score of 0 indicates a very calm, relaxed, or low-energy song, while a score of 1 represents a high-energy, intense track. It’s influenced by elements like tempo, loudness, and the overall drive or excitement in the music.
+
+- Instrumentalness: Predicts whether a track contains no vocals. “Ooh” and “aah” sounds are treated as instrumental in this context. Rap or spoken word tracks are clearly “vocal”. The closer the instrumentalness value is to 1.0, the greater likelihood the track contains no vocal content. Values above 0.5 are intended to represent instrumental tracks, but confidence is higher as the value approaches 1.0.
+
+- Key: The key the track is in. Integers map to pitches using standard Pitch Class notation. E.g. 0 = C, 1 = C♯/D♭, 2 = D, and so on. If no key was detected, the value is -1.
+
+- Liveness: The presence of an audience in the recording. Higher liveness values represent an increased probability that the track was performed live. A value above 0.8 provides strong likelihood that the track is live.
+
+- Loudness: The overall loudness of a track in decibels (dB). Loudness values are averaged across the entire track and are useful for comparing relative loudness of tracks. Loudness is the quality of a sound that is the primary psychological correlate of physical strength (amplitude). Values typical range between -60 and 0 db.
+
+- Mode: Indicates the modality (major or minor) of a track.
+
+- Speechiness: Detects the presence of spoken words in a track. The more exclusively speech-like the recording (e.g. talk show, audio book, poetry), the closer to 1.0 the attribute value. Values above 0.66 describe tracks that are probably made entirely of spoken words. Values between 0.33 and 0.66 describe tracks that may contain both music and speech, either in sections or layered, including such cases as rap music. Values below 0.33 most likely represent music and other non-speech-like tracks.
+
+- Tempo: The overall estimated tempo of a track in beats per minute (BPM). Values typical range between 0 and 250
+
+- Valence: Measures the emotional tone or mood of a track, with a range from 0 to 1. A score of 0 indicates a song with a more negative, sad, or dark feeling, while a score of 1 represents a more positive, happy, or uplifting mood. Tracks with a high valence tend to feel joyful or energetic, while those with a low valence may evoke feelings of melancholy or sadness."""
+
+@mcp.tool()
+async def mmm_music_get_recent_tracks(num: int=10, rich: bool=False) -> str:
     """Gets the user's ten most recently played tracks, including any currently playing track.
 Defaults to the 10 most recent.
-You should NOT call this unless the user explicitly asked for their most recent tracks. Using mmm_music_get_tracks_for_range is usually more approriate. """
+You should NOT call this unless the user explicitly asked for their most recent tracks. Using mmm_music_get_tracks_for_range is usually more approriate.
+Only use the rich formatting for end user display or when a markdown formatted report is requested. You'll usually want the json return."""
     recent_tracks = await lastfm_api_call("user.getrecenttracks", {"user": LASTFM_USER, "extended": 1, "limit": num})
 
     resp = "# Top Ten Most Recent Tracks\n\n"
     resp += "Tracks are listed from most recently played.\n"
-    resp += await describe_tracks(recent_tracks["recenttracks"])
+    resp += await format_tracks(recent_tracks["recenttracks"], rich=rich)
     resp += "\n"
 
     return resp
 
 @mcp.tool()
-async def mmm_music_get_tracks_for_range(from_timestamp: int=0, to_timestamp: int=0, description: str=None) -> str:
-    """Gets the user's tracks from between two Unix UTC timestamps, if from or to is not provided, returns only the ten most recent tracks. An optional description of the time span may be provided."""
+async def mmm_music_get_tracks_for_range(from_timestamp: int=0, to_timestamp: int=0, description: str=None, rich: bool=False) -> str:
+    """Gets the user's tracks from between two Unix UTC timestamps, if from or to is not provided, returns only the ten most recent tracks. An optional description of the time span may be provided.
+    Only use the rich formatting for end user display or when a markdown formatted report is requested. You'll usually want the json return."""
     if from_timestamp == 0 or to_timestamp == 0:
         return await mmm_music_get_recent_ten_tracks()
 
@@ -204,7 +218,7 @@ async def mmm_music_get_tracks_for_range(from_timestamp: int=0, to_timestamp: in
     if description:
         resp += f"during {description}: "
     resp += f"({from_date.strftime('%Y-%m-%d %H:%M:%S UTC')} - {to_date.strftime('%Y-%m-%d %H:%M:%S UTC')})\n\n"
-    resp += await describe_tracks(recent_tracks["recenttracks"])
+    resp += await format_tracks(recent_tracks["recenttracks"], rich=rich)
     resp += "\n"
 
     return resp
